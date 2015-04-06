@@ -22,6 +22,7 @@
 #include <asm/platform.h>
 #include <xen/stdbool.h>
 #include <xen/vmap.h>
+#include <xen/device_tree.h>
 #include <asm/io.h>
 #include <asm/gic.h>
 
@@ -35,9 +36,41 @@ static u64 reset_addr, reset_size;
 static u32 reset_mask;
 static bool reset_vals_valid = false;
 
+#define XGENE_SEC_GICV2_DIST_ADDR    0x78010000
+static u32 quirk_guest_pirq_need_eoi;
+
+static void xgene_check_pirq_eoi(void)
+{
+    struct dt_device_node *node;
+    int res;
+    paddr_t dbase;
+
+    dt_for_each_device_node( dt_host, node )
+    {
+        if ( !dt_get_property(node, "interrupt-controller", NULL) )
+            continue;
+
+        res = dt_device_get_address(node, 0, &dbase, NULL);
+        if ( !dbase )
+            panic("%s: Cannot find a valid address for the "
+                    "distributor", __func__);
+
+        /* 
+         * In old X-Gene Storm firmware and DT, secure mode addresses have
+         * been mentioned in GICv2 node. We have to use maintenance interrupt
+         * instead of EOI HW in this case. We check the GIC Distributor Base
+         * Address to maintain compatibility with older firmware.
+         */
+         if (dbase == XGENE_SEC_GICV2_DIST_ADDR)
+             quirk_guest_pirq_need_eoi = PLATFORM_QUIRK_GUEST_PIRQ_NEED_EOI;
+         else
+             quirk_guest_pirq_need_eoi = 0;
+    }
+}
+
 static uint32_t xgene_storm_quirks(void)
 {
-    return PLATFORM_QUIRK_GIC_64K_STRIDE|PLATFORM_QUIRK_GUEST_PIRQ_NEED_EOI;
+    return PLATFORM_QUIRK_GIC_64K_STRIDE| quirk_guest_pirq_need_eoi;
 }
 
 static int map_one_mmio(struct domain *d, const char *what,
@@ -212,6 +245,8 @@ static int xgene_storm_init(void)
     reset_mask = XGENE_RESET_MASK;
 
     reset_vals_valid = true;
+    xgene_check_pirq_eoi();
+
     return 0;
 }
 
